@@ -16,8 +16,10 @@ use embedded_graphics::text::{Baseline, Text};
 use embedded_hal_compat::ReverseCompat;
 use esp_hal::clock::CpuClock;
 use esp_hal::i2c::master::{Config, I2c};
+use esp_hal::ledc::{channel, timer, LSGlobalClkSource, Ledc};
 use esp_hal::timer::systimer::SystemTimer;
 use esp_hal::timer::timg::TimerGroup;
+use esp_hal_buzzer::{Buzzer, VolumeType};
 use esp_wifi::ble::controller::BleConnector;
 use sh1106::mode::GraphicsMode;
 use {esp_backtrace as _, esp_println as _};
@@ -71,6 +73,15 @@ async fn main(spawner: Spawner) {
         .text_color(BinaryColor::On)
         .build();
 
+    let mut ledc = Ledc::new(peripherals.LEDC);
+    ledc.set_global_slow_clock(LSGlobalClkSource::APBClk);
+    let mut buzzer = Buzzer::new(
+        &ledc,
+        timer::Number::Timer0,
+        channel::Number::Channel1,
+        peripherals.GPIO21,
+    ).with_volume(peripherals.GPIO20, VolumeType::Duty);
+
     let mut counter: u32 = 0;
     loop {
         display.clear();
@@ -86,6 +97,13 @@ async fn main(spawner: Spawner) {
         display.flush().unwrap();
 
         info!("Counter: {}", counter);
+
+        if counter % 2 == 0 {
+            buzzer.play(counter).unwrap();
+            buzzer.set_volume(20).unwrap();
+        } else {
+            buzzer.set_volume(0).unwrap();
+        }
     }
 
     // for inspiration have a look at the examples at https://github.com/esp-rs/esp-hal/tree/esp-hal-v1.0.0-rc.0/examples/src/bin
