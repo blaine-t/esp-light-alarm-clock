@@ -9,11 +9,17 @@
 use bt_hci::controller::ExternalController;
 use defmt::info;
 use embassy_executor::Spawner;
-use embassy_time::{Duration, Timer};
+use embedded_graphics::mono_font::{ascii::FONT_6X10, MonoTextStyleBuilder};
+use embedded_graphics::pixelcolor::BinaryColor;
+use embedded_graphics::prelude::{Drawable, Point};
+use embedded_graphics::text::{Baseline, Text};
+use embedded_hal_compat::ReverseCompat;
 use esp_hal::clock::CpuClock;
+use esp_hal::i2c::master::{Config, I2c};
 use esp_hal::timer::systimer::SystemTimer;
 use esp_hal::timer::timg::TimerGroup;
 use esp_wifi::ble::controller::BleConnector;
+use sh1106::mode::GraphicsMode;
 use {esp_backtrace as _, esp_println as _};
 
 extern crate alloc;
@@ -47,13 +53,39 @@ async fn main(spawner: Spawner) {
     // find more examples https://github.com/embassy-rs/trouble/tree/main/examples/esp32
     let transport = BleConnector::new(&wifi_init, peripherals.BT);
     let _ble_controller = ExternalController::<_, 20>::new(transport);
-
     // TODO: Spawn some tasks
     let _ = spawner;
 
+    let i2c = I2c::new(peripherals.I2C0, Config::default())
+        .unwrap()
+        .with_sda(peripherals.GPIO23)
+        .with_scl(peripherals.GPIO22)
+        .reverse();
+
+    let mut display: GraphicsMode<_> = sh1106::Builder::new().connect_i2c(i2c).into();
+    display.init().unwrap();
+    display.flush().unwrap();
+
+    let text_style = MonoTextStyleBuilder::new()
+        .font(&FONT_6X10)
+        .text_color(BinaryColor::On)
+        .build();
+
+    let mut counter: u32 = 0;
     loop {
-        info!("Hello world!");
-        Timer::after(Duration::from_secs(1)).await;
+        display.clear();
+
+        counter += 1;
+        let mut buffer = [0u8; 32];
+        let count_str =
+            format_no_std::show(&mut buffer, format_args!("Count: {}", counter)).unwrap();
+        Text::with_baseline(count_str, Point::zero(), text_style, Baseline::Top)
+            .draw(&mut display)
+            .unwrap();
+
+        display.flush().unwrap();
+
+        info!("Counter: {}", counter);
     }
 
     // for inspiration have a look at the examples at https://github.com/esp-rs/esp-hal/tree/esp-hal-v1.0.0-rc.0/examples/src/bin
