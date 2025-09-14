@@ -15,12 +15,14 @@ use embedded_graphics::prelude::{Drawable, Point};
 use embedded_graphics::text::{Baseline, Text};
 use embedded_hal_compat::ReverseCompat;
 use esp_hal::clock::CpuClock;
+use esp_hal::gpio::{Input, InputConfig, Pull};
 use esp_hal::i2c::master::{Config, I2c};
 use esp_hal::ledc::{channel, timer, LSGlobalClkSource, Ledc};
 use esp_hal::timer::systimer::SystemTimer;
 use esp_hal::timer::timg::TimerGroup;
 use esp_hal_buzzer::{Buzzer, VolumeType};
 use esp_wifi::ble::controller::BleConnector;
+use rotary_encoder_embedded::{Direction, RotaryEncoder};
 use sh1106::mode::GraphicsMode;
 use {esp_backtrace as _, esp_println as _};
 
@@ -80,26 +82,49 @@ async fn main(spawner: Spawner) {
         timer::Number::Timer0,
         channel::Number::Channel1,
         peripherals.GPIO21,
-    ).with_volume(peripherals.GPIO20, VolumeType::Duty);
+    )
+    .with_volume(peripherals.GPIO20, VolumeType::Duty);
+    buzzer.play(1000).unwrap();
 
-    let mut counter: u32 = 0;
+    let rotary_dt = Input::new(
+        peripherals.GPIO6,
+        InputConfig::default().with_pull(Pull::Up),
+    );
+    let rotary_clk = Input::new(
+        peripherals.GPIO7,
+        InputConfig::default().with_pull(Pull::Up),
+    );
+
+    let mut rotary_encoder = RotaryEncoder::new(rotary_dt, rotary_clk).into_standard_mode();
+
+    let mut counter: i32 = 0;
     loop {
-        display.clear();
+        match rotary_encoder.update() {
+            Direction::Clockwise => {
+                counter += 1;
+            }
+            Direction::Anticlockwise => {
+                counter -= 1;
+            }
+            Direction::None => {
+                // Do nothing
+            }
+        }
 
-        counter += 1;
-        let mut buffer = [0u8; 32];
-        let count_str =
-            format_no_std::show(&mut buffer, format_args!("Count: {}", counter)).unwrap();
-        Text::with_baseline(count_str, Point::zero(), text_style, Baseline::Top)
-            .draw(&mut display)
-            .unwrap();
+        // display.clear();
 
-        display.flush().unwrap();
+        // let mut buffer = [0u8; 32];
+        // let count_str =
+        //     format_no_std::show(&mut buffer, format_args!("Count: {}", counter)).unwrap();
+        // Text::with_baseline(count_str, Point::zero(), text_style, Baseline::Top)
+        //     .draw(&mut display)
+        //     .unwrap();
+
+        // display.flush().unwrap();
 
         info!("Counter: {}", counter);
 
         if counter % 2 == 0 {
-            buzzer.play(counter).unwrap();
             buzzer.set_volume(20).unwrap();
         } else {
             buzzer.set_volume(0).unwrap();
