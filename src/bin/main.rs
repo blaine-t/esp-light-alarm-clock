@@ -9,6 +9,7 @@
 use bt_hci::controller::ExternalController;
 use defmt::info;
 use embassy_executor::Spawner;
+use embassy_time::Timer;
 use embedded_graphics::mono_font::{ascii::FONT_6X10, MonoTextStyleBuilder};
 use embedded_graphics::pixelcolor::BinaryColor;
 use embedded_graphics::prelude::{Drawable, Point};
@@ -16,6 +17,7 @@ use embedded_graphics::text::{Baseline, Text};
 use embedded_hal_compat::ReverseCompat;
 use esp_hal::clock::CpuClock;
 use esp_hal::gpio::lp_io::LowPowerInput;
+use esp_hal::gpio::AnyPin;
 use esp_hal::i2c::master::{Config, I2c};
 use esp_hal::ledc::{channel, timer, LSGlobalClkSource, Ledc};
 use esp_hal::load_lp_code;
@@ -25,6 +27,7 @@ use esp_hal::timer::timg::TimerGroup;
 use esp_hal_buzzer::{Buzzer, VolumeType};
 use esp_wifi::ble::controller::BleConnector;
 use sh1106::mode::GraphicsMode;
+
 use {esp_backtrace as _, esp_println as _};
 
 extern crate alloc;
@@ -35,8 +38,6 @@ esp_bootloader_esp_idf::esp_app_desc!();
 
 #[esp_hal_embassy::main]
 async fn main(spawner: Spawner) {
-    // generator version: 0.5.0
-
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
 
@@ -58,42 +59,31 @@ async fn main(spawner: Spawner) {
     // find more examples https://github.com/embassy-rs/trouble/tree/main/examples/esp32
     let transport = BleConnector::new(&wifi_init, peripherals.BT);
     let _ble_controller = ExternalController::<_, 20>::new(transport);
-    // TODO: Spawn some tasks
-    let _ = spawner;
+    
+    spawner.spawn(lp_core_task(peripherals.LP_CORE, peripherals.GPIO2, peripherals.GPIO3)).ok();
+    spawner.spawn(display_task(peripherals.I2C0, peripherals.GPIO23, peripherals.GPIO22)).ok();
+    spawner.spawn(buzzer_task(peripherals.LEDC, peripherals.GPIO21.into(), peripherals.GPIO20.into())).ok();
 
-    let i2c = I2c::new(peripherals.I2C0, Config::default())
-        .unwrap()
-        .with_sda(peripherals.GPIO23)
-        .with_scl(peripherals.GPIO22)
-        .reverse();
+    // Main loop can be empty since tasks handle everything
+    loop {
+        // Tasks are running independently
+        Timer::after_millis(1000).await;
+    }
+}
 
-    let mut display: GraphicsMode<_> = sh1106::Builder::new().connect_i2c(i2c).into();
-    display.init().unwrap();
-    display.flush().unwrap();
-
-    let text_style = MonoTextStyleBuilder::new()
-        .font(&FONT_6X10)
-        .text_color(BinaryColor::On)
-        .build();
-
-    let mut ledc = Ledc::new(peripherals.LEDC);
-    ledc.set_global_slow_clock(LSGlobalClkSource::APBClk);
-    let mut buzzer = Buzzer::new(
-        &ledc,
-        timer::Number::Timer0,
-        channel::Number::Channel1,
-        peripherals.GPIO21,
-    )
-    .with_volume(peripherals.GPIO20, VolumeType::Duty);
-    buzzer.play(1000).unwrap();
-
-    let rotary_dt = LowPowerInput::new(peripherals.GPIO2);
-    let rotary_clk = LowPowerInput::new(peripherals.GPIO3);
+#[embassy_executor::task]
+async fn lp_core_task(
+    lp_core_peripheral: esp_hal::peripherals::LP_CORE<'static>, 
+    gpio2: esp_hal::peripherals::GPIO2<'static>, 
+    gpio3: esp_hal::peripherals::GPIO3<'static>
+) {
+    let rotary_dt = LowPowerInput::new(gpio2);
+    let rotary_clk = LowPowerInput::new(gpio3);
     rotary_dt.pullup_enable(true);
     rotary_clk.pullup_enable(true);
 
     // Initialize LP Core
-    let mut lp_core = LpCore::new(peripherals.LP_CORE);
+    let mut lp_core = LpCore::new(lp_core_peripheral);
     lp_core.stop();
 
     // Load and start the LP encoder reader program
@@ -107,10 +97,70 @@ async fn main(spawner: Spawner) {
         rotary_clk,
     );
 
+    // LP Core setup is complete, task can finish or loop if needed
+    loop {
+        Timer::after_millis(10000).await; // Check periodically if needed
+    }
+}
+
+#[embassy_executor::task]
+async fn buzzer_task(ledc_peripheral: esp_hal::peripherals::LEDC<'static>, buzzer_pin: AnyPin<'static>, volume_pin: AnyPin<'static>) {
+    let mut ledc = Ledc::new(ledc_peripheral);
+    ledc.set_global_slow_clock(LSGlobalClkSource::APBClk);
+    let mut buzzer = Buzzer::new(
+        &mut ledc,
+        timer::Number::Timer0,
+        channel::Number::Channel1,
+        buzzer_pin,
+    )
+    .with_volume(volume_pin, VolumeType::Duty);
+    buzzer.play(1000).unwrap();
+
     // Function to read counter from LP Core shared memory
     let read_counter = || -> i32 {
-        // Read from RTC memory where LP Core stores the counter value
-        // Assuming the counter is stored at offset 0 in RTC memory
+        unsafe {
+            let ptr = 0x5000_2000 as *const i32; // RTC_DATA_LOW base address
+            ptr.read_volatile()
+        }
+    };
+
+    loop {
+        let counter = read_counter();
+
+        if counter % 2 == 0 {
+            buzzer.set_volume(30).unwrap();
+        } else {
+            buzzer.set_volume(0).unwrap();
+        }
+
+        Timer::after_millis(500).await; // Check periodically if needed
+    }
+}
+
+#[embassy_executor::task]
+async fn display_task(
+    i2c0_peripheral: esp_hal::peripherals::I2C0<'static>,
+    gpio23: esp_hal::peripherals::GPIO23<'static>,
+    gpio22: esp_hal::peripherals::GPIO22<'static>
+) {
+    // Initialize display inside the task
+    let i2c = I2c::new(i2c0_peripheral, Config::default())
+        .unwrap()
+        .with_sda(gpio23)
+        .with_scl(gpio22)
+        .reverse();
+
+    let mut display: GraphicsMode<_> = sh1106::Builder::new().connect_i2c(i2c).into();
+    display.init().unwrap();
+    display.flush().unwrap();
+
+    let text_style = MonoTextStyleBuilder::new()
+        .font(&FONT_6X10)
+        .text_color(BinaryColor::On)
+        .build();
+
+    // Function to read counter from LP Core shared memory
+    let read_counter = || -> i32 {
         unsafe {
             let ptr = 0x5000_2000 as *const i32; // RTC_DATA_LOW base address
             ptr.read_volatile()
@@ -131,13 +181,7 @@ async fn main(spawner: Spawner) {
 
         display.flush().unwrap();
 
-        info!("Counter: {}", counter);
-
-        if counter % 2 == 0 {
-            buzzer.set_volume(20).unwrap();
-        } else {
-            buzzer.set_volume(0).unwrap();
-        }
+        Timer::after_millis(1).await; // Check periodically if needed
     }
 
     // for inspiration have a look at the examples at https://github.com/esp-rs/esp-hal/tree/esp-hal-v1.0.0-rc.0/examples/src/bin
