@@ -15,14 +15,15 @@ use embedded_graphics::prelude::{Drawable, Point};
 use embedded_graphics::text::{Baseline, Text};
 use embedded_hal_compat::ReverseCompat;
 use esp_hal::clock::CpuClock;
-use esp_hal::gpio::{Input, InputConfig, Pull};
+use esp_hal::gpio::lp_io::LowPowerInput;
 use esp_hal::i2c::master::{Config, I2c};
 use esp_hal::ledc::{channel, timer, LSGlobalClkSource, Ledc};
+use esp_hal::load_lp_code;
+use esp_hal::lp_core::{LpCore, LpCoreWakeupSource};
 use esp_hal::timer::systimer::SystemTimer;
 use esp_hal::timer::timg::TimerGroup;
 use esp_hal_buzzer::{Buzzer, VolumeType};
 use esp_wifi::ble::controller::BleConnector;
-use rotary_encoder_embedded::{Direction, RotaryEncoder};
 use sh1106::mode::GraphicsMode;
 use {esp_backtrace as _, esp_println as _};
 
@@ -86,41 +87,49 @@ async fn main(spawner: Spawner) {
     .with_volume(peripherals.GPIO20, VolumeType::Duty);
     buzzer.play(1000).unwrap();
 
-    let rotary_dt = Input::new(
-        peripherals.GPIO6,
-        InputConfig::default().with_pull(Pull::Up),
+    let rotary_dt = LowPowerInput::new(peripherals.GPIO2);
+    let rotary_clk = LowPowerInput::new(peripherals.GPIO3);
+    rotary_dt.pullup_enable(true);
+    rotary_clk.pullup_enable(true);
+
+    // Initialize LP Core
+    let mut lp_core = LpCore::new(peripherals.LP_CORE);
+    lp_core.stop();
+
+    // Load and start the LP encoder reader program
+    let lp_core_code = load_lp_code!(
+        "lp-encoder-reader/target/riscv32imac-unknown-none-elf/release/lp-encoder-reader"
     );
-    let rotary_clk = Input::new(
-        peripherals.GPIO7,
-        InputConfig::default().with_pull(Pull::Up),
+    lp_core_code.run(
+        &mut lp_core,
+        LpCoreWakeupSource::HpCpu,
+        rotary_dt,
+        rotary_clk,
     );
 
-    let mut rotary_encoder = RotaryEncoder::new(rotary_dt, rotary_clk).into_standard_mode();
-
-    let mut counter: i32 = 0;
-    loop {
-        match rotary_encoder.update() {
-            Direction::Clockwise => {
-                counter += 1;
-            }
-            Direction::Anticlockwise => {
-                counter -= 1;
-            }
-            Direction::None => {
-                // Do nothing
-            }
+    // Function to read counter from LP Core shared memory
+    let read_counter = || -> i32 {
+        // Read from RTC memory where LP Core stores the counter value
+        // Assuming the counter is stored at offset 0 in RTC memory
+        unsafe {
+            let ptr = 0x5000_2000 as *const i32; // RTC_DATA_LOW base address
+            ptr.read_volatile()
         }
+    };
 
-        // display.clear();
+    loop {
+        let counter = read_counter();
 
-        // let mut buffer = [0u8; 32];
-        // let count_str =
-        //     format_no_std::show(&mut buffer, format_args!("Count: {}", counter)).unwrap();
-        // Text::with_baseline(count_str, Point::zero(), text_style, Baseline::Top)
-        //     .draw(&mut display)
-        //     .unwrap();
+        display.clear();
 
-        // display.flush().unwrap();
+        let mut buffer = [0u8; 32];
+        let count_str =
+            format_no_std::show(&mut buffer, format_args!("Count: {}", counter)).unwrap();
+        Text::with_baseline(count_str, Point::zero(), text_style, Baseline::Top)
+            .draw(&mut display)
+            .unwrap();
+
+        display.flush().unwrap();
 
         info!("Counter: {}", counter);
 

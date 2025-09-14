@@ -1,0 +1,29 @@
+[package]
+name = "lp-encoder-reader"
+version = "0.1.0"
+edition = "2024"
+
+
+[dependencies]
+cfg-if = { version = "1.0.3", default-features = false }
+embedded-hal = { version = "1.0.0", default-features = false }
+esp-hal-procmacros = { version = "0.19.0", default-features = false }
+esp-lp-hal = { version = "0.2.0", default-features = false, features = ["embedded-hal", "esp32c6"] }
+esp32c6-lp = { version = "0.3.0", default-features = false, optional = true }
+esp32s2-ulp = { version = "0.3.0", default-features = false, optional = true }
+esp32s3-ulp = { version = "0.3.0", default-features = false, optional = true }
+nb = { version = "1.1.0", default-features = false, optional = true }
+panic-halt = {version = "0.2.0", default-features = false }
+rotary-encoder-embedded = { version = "0.5.0", default-features = false }
+
+[features]
+default = ["esp32c6"]
+
+
+# Chip Support Feature Flags
+# Target the ESP32-C6.
+esp32c6 = ["dep:esp32c6-lp",  "esp-hal-procmacros/is-lp-core", "dep:nb"]
+# Target the ESP32-S2.
+esp32s2 = ["dep:esp32s2-ulp", "esp-hal-procmacros/is-ulp-core"]
+# Target the ESP32-S3.
+esp32s3 = ["dep:esp32s3-ulp", "esp-hal-procmacros/is-ulp-core"]
