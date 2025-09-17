@@ -71,6 +71,14 @@ async fn main(spawner: Spawner) {
     }
 }
 
+// Function to read counter from LP Core shared memory
+fn read_counter() -> i32 {
+    unsafe {
+        let ptr = 0x5000_2000 as *const i32; // RTC_DATA_LOW base address
+        ptr.read_volatile()
+    }
+}
+
 #[embassy_executor::task]
 async fn lp_core_task(
     lp_core_peripheral: esp_hal::peripherals::LP_CORE<'static>, 
@@ -114,21 +122,14 @@ async fn buzzer_task(ledc_peripheral: esp_hal::peripherals::LEDC<'static>, buzze
         buzzer_pin,
     )
     .with_volume(volume_pin, VolumeType::Duty);
+    
     buzzer.play(1000).unwrap();
-
-    // Function to read counter from LP Core shared memory
-    let read_counter = || -> i32 {
-        unsafe {
-            let ptr = 0x5000_2000 as *const i32; // RTC_DATA_LOW base address
-            ptr.read_volatile()
-        }
-    };
 
     loop {
         let counter = read_counter();
 
         if counter % 2 == 0 {
-            buzzer.set_volume(30).unwrap();
+            buzzer.set_volume(25).unwrap();
         } else {
             buzzer.set_volume(0).unwrap();
         }
@@ -143,7 +144,6 @@ async fn display_task(
     gpio23: esp_hal::peripherals::GPIO23<'static>,
     gpio22: esp_hal::peripherals::GPIO22<'static>
 ) {
-    // Initialize display inside the task
     let i2c = I2c::new(i2c0_peripheral, Config::default())
         .unwrap()
         .with_sda(gpio23)
@@ -159,14 +159,6 @@ async fn display_task(
         .text_color(BinaryColor::On)
         .build();
 
-    // Function to read counter from LP Core shared memory
-    let read_counter = || -> i32 {
-        unsafe {
-            let ptr = 0x5000_2000 as *const i32; // RTC_DATA_LOW base address
-            ptr.read_volatile()
-        }
-    };
-
     loop {
         let counter = read_counter();
 
@@ -181,8 +173,6 @@ async fn display_task(
 
         display.flush().unwrap();
 
-        Timer::after_millis(1).await; // Check periodically if needed
+        Timer::after_millis(1).await; // Free core to do other tasks between refreshes
     }
-
-    // for inspiration have a look at the examples at https://github.com/esp-rs/esp-hal/tree/esp-hal-v1.0.0-rc.0/examples/src/bin
 }
